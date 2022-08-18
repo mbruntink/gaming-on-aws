@@ -166,10 +166,6 @@ Resources:
       UserData:
        Fn::Base64: !Sub |
         <script>
-        # mkdir C:\Temp
-        # powershell -Command "(New-Object Net.WebClient).DownloadFile('https://raw.githubusercontent.com/mbruntink/gaming-on-aws/main/scripts/InstallGPUDriver.ps1','C:\Temp\InstallGPUDriver.ps1')"
-        # powershell -Command "(New-Object Net.WebClient).DownloadFile('https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-server-x64-Release.msi','C:\Temp\nice-dcv-server-x64-Release.msi')"
-        # powershell -Command "(New-object Net.WebClient).DownloadFile('http://dl.google.com/chrome/install/latest/chrome_installer.exe', "'C:\Temp\ChromeInstaller.exe")
         cfn-init.exe -v --stack ${AWS::StackId} --resource EC2Instance --region ${AWS::Region} --configsets default
         </script>      
       Tags:
