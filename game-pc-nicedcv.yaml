@@ -1,0 +1,219 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to deploy EC2 Instance
+Parameters:
+  InstanceName:
+    Description: Name of the EC2 instance
+    Type: String
+    Default: game-pc
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable RDP access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  InstanceType:
+    Description: Game PC EC2 instance type
+    Type: String
+    Default: g4dn.xlarge
+    AllowedValues:
+      - g3s.xlarge
+      - g4dn.xlarge
+      - g4ad.xlarge
+      - g5.xlarge     
+    ConstraintDescription: must be a valid EC2 instance type.
+  DiskSize:
+    Description: Size of the instance root volume.
+    Type: Number
+    Default: 250
+  SourceLocation:
+    Description: The IP address range that can be used to RDP/NiceDCV to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-windows-latest/Windows_Server-2019-English-Full-Base
+    Description: SSM parameter name that stores the latest Id for the image
+Resources:
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['',[!Ref InstanceName, '-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: AllowDriverDownload
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - arn:aws:s3:::nvidia-gaming
+                  - arn:aws:s3:::nvidia-gaming/*
+                  - arn:aws:s3:::ec2-windows-nvidia-drivers
+                  - arn:aws:s3:::ec2-windows-nvidia-drivers/*
+                  - arn:aws:s3:::ec2-amd-windows-drivers
+                  - arn:aws:s3:::ec2-amd-windows-drivers/*
+        - PolicyName: AllowNICEDCVLicenseDownload
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::dcv-license.${AWS::Region}/*"
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+      InstanceProfileName: !Join ['',[!Ref InstanceName, '-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - 01_install_driver
+            - 02_optimize_gpu
+            - 03_install_nicedcv
+            - 04_install_chrome
+            - 05_install_steam
+            - 06_signal_complete
+        01_install_driver:
+          files:
+            "C:\\Temp\\InstallGPUDriver.ps1":
+              source: https://raw.githubusercontent.com/mbruntink/gaming-on-aws/main/scripts/InstallGPUDriver.ps1
+          commands:
+            01_install_drivers:
+              command: powershell -ExecutionPolicy Unrestricted "C:\\Temp\\InstallGPUDriver.ps1"
+              waitAfterCompletion: forever
+        02_optimize_gpu:
+          files:
+            "C:\\Temp\\OptimizeGPU.ps1":
+              source: https://raw.githubusercontent.com/mbruntink/gaming-on-aws/main/scripts/OptimizeGPU.ps1
+          commands:
+            01_optimize_gpu:
+              command: powershell -ExecutionPolicy Unrestricted "C:\\Temp\\OptimizeGPU.ps1"
+              waitAfterCompletion: 0
+        03_install_nicedcv:
+          files:
+            "C:\\Temp\\nice-dcv-server-x64-Release.msi":
+              source: https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-server-x64-Release.msi
+          commands:
+            01_install_nicedcv:
+              command: msiexec.exe /i "C:\\Temp\\nice-dcv-server-x64-Release.msi" ADDLOCAL=ALL /quiet /norestart /l*v "c:\\Temp\\dcv_install_msi.log"
+              waitAfterCompletion: 0
+            02_set_default_session_owner:
+              command: powershell -ExecutionPolicy Unrestricted -Command "New-ItemProperty -Path 'registry::HKEY_USERS\S-1-5-18\Software\GSettings\com\nicesoftware\dcv\session-management\automatic-console-session' -Name owner -Value Administrator -PropertyType String -Force"
+              waitAfterCompletion: 0
+            03_stop_dcv_server: 
+              command: powershell -ExecutionPolicy Unrestricted -Command "Get-Service -Name 'DCV Server' | Stop-Service"
+              waitAfterCompletion: 0
+            04_start_dcv_server: 
+              command: powershell -ExecutionPolicy Unrestricted -Command "Get-Service -Name 'DCV Server' | Start-Service"
+              waitAfterCompletion: 0
+        04_install_chrome:
+          files:
+            "C:\\Temp\\ChromeInstaller.exe":
+              source: http://dl.google.com/chrome/install/latest/chrome_installer.exe
+          commands:
+            01_install_chrome:
+              command:  C:\\Temp\\ChromeInstaller.exe /silent /install
+              waitAfterCompletion: 0
+        05_install_steam:
+          files:
+            "C:\\Temp\\SteamSetup.exe":
+              source: https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
+          commands:
+            01_install_steam:
+              command:  C:\\Temp\\SteamSetup.exe /S
+              waitAfterCompletion: 0
+        06_signal_complete:
+          commands:
+            01_signal_complete:
+              command: !Sub 'cfn-signal.exe -s true "${EC2InstanceWaitConditionHandle}"'
+    Properties:
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+      - !Ref EC2InstanceSecurityGroup
+      KeyName: !Ref KeyName
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      BlockDeviceMappings:
+       - DeviceName: /dev/sda1
+         Ebs:
+          VolumeType: gp2
+          VolumeSize: !Ref DiskSize
+          # Iops: 3000
+          DeleteOnTermination: true
+          Encrypted: false
+      UserData:
+       Fn::Base64: !Sub |
+        <script>
+        # mkdir C:\Temp
+        # powershell -Command "(New-Object Net.WebClient).DownloadFile('https://raw.githubusercontent.com/mbruntink/gaming-on-aws/main/scripts/InstallGPUDriver.ps1','C:\Temp\InstallGPUDriver.ps1')"
+        # powershell -Command "(New-Object Net.WebClient).DownloadFile('https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-server-x64-Release.msi','C:\Temp\nice-dcv-server-x64-Release.msi')"
+        # powershell -Command "(New-object Net.WebClient).DownloadFile('http://dl.google.com/chrome/install/latest/chrome_installer.exe', "'C:\Temp\ChromeInstaller.exe")
+        cfn-init.exe -v --stack ${AWS::StackId} --resource EC2Instance --region ${AWS::Region} --configsets default
+        </script>      
+      Tags:
+        - Key: Name
+          Value: !Join ['',[!Ref InstanceName, '-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+  EC2InstanceWaitConditionHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  EC2InstanceWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: EC2Instance
+    Properties:
+      Handle: !Ref EC2InstanceWaitConditionHandle
+      Timeout: '900'
+  EC2InstanceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref EC2Instance
+  EC2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable RDP (3389) and NICE DCV (8443) access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3389
+        ToPort: 3389
+        CidrIp: !Ref SourceLocation
+      - IpProtocol: tcp
+        FromPort: 8443
+        ToPort: 8443
+        CidrIp: !Ref SourceLocation
+      - IpProtocol: udp
+        FromPort: 8443
+        ToPort: 8443
+        CidrIp: !Ref SourceLocation              
+Outputs:
+  InstanceId:
+    Description: InstanceId of the newly created EC2 instance
+    Value: !Ref EC2Instance
+  AZ:
+    Description: Availability Zone of the newly created EC2 instance
+    Value: !GetAtt EC2Instance.AvailabilityZone
+  PublicDNS:
+    Description: Public DNSName of the newly created EC2 instance
+    Value: !GetAtt EC2Instance.PublicDnsName
+  PublicIP:
+    Description: Public IP address of the newly created EC2 instance
+    Value: !Ref EC2InstanceEIP
